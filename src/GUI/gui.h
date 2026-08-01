@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QString>
 #include <QList>
+#include <QSet>
 #include <QDate>
 #include <QPrinter>
 #include "common/treenode.h"
@@ -37,6 +38,8 @@ class POIAction;
 class Data;
 class DEMLoader;
 class NavigationWidget;
+class WaypointAudit;
+class Coordinates;
 
 class GUI : public QMainWindow
 {
@@ -84,6 +87,9 @@ private slots:
 	void showRoutes(bool show);
 	void showAreas(bool show);
 	void showWaypoints(bool show);
+	void waypointActivated(const Coordinates &coordinates, qreal distance);
+	void closeFile(const QString &fileName);
+	void highlightFiles(const QSet<QString> &files);
 	void loadMap();
 	void loadMapDir();
 	void nextMap();
@@ -144,7 +150,8 @@ private slots:
 private:
 	typedef QPair<QDateTime, QDateTime> DateTimeRange;
 
-	void closeFiles();
+	void closeFiles(bool keepAudit = false);
+	void reloadDisplay(const QStringList &files);
 	void plot(QPrinter *printer);
 	void plotMainPage(QPainter *painter, const QRectF &rect, qreal ratio,
 	  bool expand = false);
@@ -168,12 +175,13 @@ private:
 	void createMapView();
 	void createGraphTabs();
 	void createBrowser();
+	void createWaypointAudit();
 
 	void openDir(const QString &path, int &showError);
 	bool openPOIFile(const QString &fileName);
 	bool loadFile(const QString &fileName, bool tryUnknown, int &showError);
 	bool loadURL(const QUrl &url, int &showError);
-	void loadData(const Data &data);
+	void loadData(const Data &data, const QString &fileName = QString());
 	bool loadMapNode(const TreeNode<Map*> &node, MapAction *&action,
 	  const QList<QAction*> &existingActions, int &showError);
 	void loadMapDirNode(const TreeNode<Map*> &node, QList<MapAction*> &actions,
@@ -353,7 +361,12 @@ private:
 	DEMLoader *_dem;
 
 	FileBrowser *_browser;
+	WaypointAudit *_waypointAudit;
 	QList<QString> _files;
+	/* Files checked via "Highlight" in the audit sidebar. When non-empty,
+	   only these files are shown on the map/graphs/stats; the others stay
+	   open (listed in _files and the sidebar) but are not displayed. */
+	QSet<QString> _highlightedFiles;
 
 	int _trackCount, _routeCount, _areaCount, _waypointCount;
 	qreal _trackDistance, _routeDistance;

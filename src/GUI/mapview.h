@@ -30,6 +30,7 @@ class Route;
 class TrackItem;
 class RouteItem;
 class WaypointItem;
+class TrackPointItem;
 class ScaleItem;
 class CoordinatesItem;
 class PathItem;
@@ -103,6 +104,8 @@ public:
 
 	RectC boundingRect() const;
 	const Projection &inputProjection() const {return _inputProjection;}
+
+	void centerOnCoordinates(const Coordinates &c);
 
 #ifdef Q_OS_ANDROID
 	NavigationWidget *navigation() {return _nav;}
@@ -191,6 +194,7 @@ private:
 	QList<TrackItem*> _tracks;
 	QList<RouteItem*> _routes;
 	QList<WaypointItem*> _waypoints;
+	QList<TrackPointItem*> _trackPoints;
 	QList<PlaneItem*> _areas;
 	POIHash _pois;
 

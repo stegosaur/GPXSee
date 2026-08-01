@@ -11,16 +11,26 @@ class PathPoint
 {
 public:
 	PathPoint() :
-	  _coordinates(Coordinates()), _distance(NAN) {}
-	PathPoint(const Coordinates &coordinates, qreal distance)
-	  : _coordinates(coordinates), _distance(distance) {}
+	  _coordinates(Coordinates()), _distance(NAN), _time(NAN),
+	  _movingTime(NAN) {}
+	PathPoint(const Coordinates &coordinates, qreal distance,
+	  qreal time = NAN, qreal movingTime = NAN)
+	  : _coordinates(coordinates), _distance(distance), _time(time),
+	  _movingTime(movingTime) {}
 
 	const Coordinates &coordinates() const {return _coordinates;}
 	qreal distance() const {return _distance;}
+	// Elapsed time (seconds) from the track start to this point, or NAN if
+	// the point has no timestamp (e.g. a route point).
+	qreal time() const {return _time;}
+	// Same as time(), minus accumulated pause/stop time up to this point.
+	qreal movingTime() const {return _movingTime;}
 
 private:
 	Coordinates _coordinates;
 	qreal _distance;
+	qreal _time;
+	qreal _movingTime;
 };
 
 Q_DECLARE_TYPEINFO(PathPoint, Q_PRIMITIVE_TYPE);

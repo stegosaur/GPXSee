@@ -36,6 +36,28 @@ static qreal median(QVector<qreal> &v)
 	return v.at(v.size() / 2);
 }
 
+/*
+   Median point-to-point time delta (seconds) in a segment. Used to scale
+   the pause-detection interval to the segment's actual sampling rate: a
+   fixed short pauseInterval (e.g. the 10s automatic default) implicitly
+   assumes logging at roughly 1Hz. For coarser-interval loggers (e.g. a
+   phone logging every ~2 minutes to save battery), a single low-speed
+   reading between two consecutive points would already exceed a 10s
+   threshold and get misclassified as a stop, collapsing most of the track
+   into "stopped" runs that get stripped from the rendered path/distance.
+*/
+static qreal medianInterval(const QVector<qreal> &time)
+{
+	if (time.size() < 2)
+		return NAN;
+
+	QVector<qreal> dt(time.size() - 1);
+	for (int i = 1; i < time.size(); i++)
+		dt[i - 1] = time.at(i) - time.at(i - 1);
+
+	return median(dt);
+}
+
 static qreal MAD(QVector<qreal> &v, qreal m)
 {
 	for (int i = 0; i < v.size(); i++)
@@ -48,18 +70,57 @@ static qreal MAD(QVector<qreal> &v, qreal m)
    The acceleration data distribution has usualy a (much) higher kurtosis than
    the normal distribution thus a higher comparsion value than the usual 3.5 is
    required.
+
+   On a track that is mostly stationary with only brief bursts of real
+   movement (e.g. a coarse-interval logger that runs for many hours), the
+   acceleration distribution is dominated by the near-zero stationary
+   baseline, so a real movement burst -- even a completely genuine one --
+   looks like a statistical outlier by comparison. A pure global Z-score
+   test would then strip the entire real trip out of both the path and the
+   distance.
+
+   Confirm each Z-score-flagged candidate against physical plausibility
+   instead of pure statistics: only actually eliminate it if reaching it
+   or leaving it requires a speed no real GPS track should show (a
+   genuine glitch/teleport). A geometric "does skipping it shortcut the
+   path" test was tried first but wrongly caught real out-and-back/turn
+   points (e.g. a dead-end or cul-de-sac) that are statistically rare but
+   physically completely ordinary -- speed plausibility doesn't have that
+   blind spot, since real travel, even a sharp turnaround, still moves at
+   an ordinary speed on both legs.
 */
-static QSet<int> eliminate(const QVector<qreal> &v)
+static QSet<int> eliminate(const SegmentData &sd, const QVector<qreal> &v)
 {
+	static const qreal MAX_PLAUSIBLE_SPEED = 60.0; // m/s (~216 km/h)
+
 	QSet<int> rm;
 
 	QVector<qreal> w(v);
 	qreal m = median(w);
 	qreal M = MAD(w, m);
 
-	for (int i = 0; i < v.size(); i++)
-		if (qAbs((0.6745 * (v.at(i) - m)) / M) > 5.0)
-			rm.insert(i);
+	for (int i = 0; i < v.size(); i++) {
+		if (M <= 0 || qAbs((0.6745 * (v.at(i) - m)) / M) <= 5.0)
+			continue;
+
+		if (i > 0 && i < sd.size() - 1) {
+			qreal dIn = sd.at(i-1).coordinates().distanceTo(
+			  sd.at(i).coordinates());
+			qreal dOut = sd.at(i).coordinates().distanceTo(
+			  sd.at(i+1).coordinates());
+			qreal dtIn = sd.at(i-1).timestamp().msecsTo(
+			  sd.at(i).timestamp()) / 1000.0;
+			qreal dtOut = sd.at(i).timestamp().msecsTo(
+			  sd.at(i+1).timestamp()) / 1000.0;
+			qreal vIn = (dtIn > 1e-3) ? dIn / dtIn : 0.0;
+			qreal vOut = (dtOut > 1e-3) ? dOut / dtOut : 0.0;
+
+			if (vIn <= MAX_PLAUSIBLE_SPEED && vOut <= MAX_PLAUSIBLE_SPEED)
+				continue;
+		}
+
+		rm.insert(i);
+	}
 
 	return rm;
 }
@@ -181,6 +242,10 @@ Track::Track(const TrackData &data) : _pause(0)
 		if (!hasTime)
 			continue;
 
+		// Default: no pause info available yet, moving time == elapsed
+		// time. Overwritten below once pause detection has run.
+		seg.movingTime = seg.time;
+
 		if (_detectPauses) {
 			// get stop-points + pause duration
 			int pauseInterval;
@@ -193,6 +258,11 @@ Track::Track(const TrackData &data) : _pause(0)
 				pauseSpeed = _pauseSpeed;
 				pauseInterval = _pauseInterval;
 			}
+
+			qreal medianDt = medianInterval(seg.time);
+			if (!std::isnan(medianDt))
+				pauseInterval = qMax(pauseInterval,
+				  (int)std::ceil(medianDt * 1.5));
 
 			int ss = 0, la = 0;
 			for (int j = 1; j < seg.time.size(); j++) {
@@ -209,6 +279,17 @@ Track::Track(const TrackData &data) : _pause(0)
 					la = j;
 				}
 			}
+
+			// Per-point cumulative moving time: elapsed time minus every
+			// point-to-point interval that falls entirely within a
+			// confirmed stop run. Summed over the whole segment this
+			// reconstructs the same total as _pause above.
+			qreal cumPause = 0;
+			for (int j = 1; j < seg.time.size(); j++) {
+				if (seg.stop.contains(j) && seg.stop.contains(j-1))
+					cumPause += seg.time.at(j) - seg.time.at(j-1);
+				seg.movingTime[j] = seg.time.at(j) - cumPause;
+			}
 		}
 
 		if (!_outlierEliminate)
@@ -216,7 +297,7 @@ Track::Track(const TrackData &data) : _pause(0)
 
 
 		// eliminate outliers
-		seg.outliers = eliminate(acceleration);
+		seg.outliers = eliminate(sd, acceleration);
 
 		// stop-points can not be outliers
 		QSet<int>::const_iterator it;
@@ -628,7 +709,31 @@ Path Track::path() const
 		for (int j = 0; j < sd.size(); j++)
 			if (!seg.outliers.contains(j) && !discardStopPoint(seg, j))
 				ps.append(PathPoint(sd.at(j).coordinates(),
-				  seg.distance.at(j)));
+				  seg.distance.at(j), seg.time.at(j),
+				  seg.movingTime.isEmpty() ? NAN : seg.movingTime.at(j)));
+	}
+
+	ret.setStyle(_data.style());
+
+	return ret;
+}
+
+Path Track::allPoints() const
+{
+	Path ret;
+
+	for (int i = 0; i < _data.size(); i++) {
+		const SegmentData &sd = _data.at(i);
+		if (sd.isEmpty())
+			continue;
+		const Segment &seg = _segments.at(i);
+		ret.append(PathSegment());
+		PathSegment &ps = ret.last();
+
+		for (int j = 0; j < sd.size(); j++)
+			ps.append(PathPoint(sd.at(j).coordinates(), seg.distance.at(j),
+			  seg.time.at(j), seg.movingTime.isEmpty() ? NAN
+			  : seg.movingTime.at(j)));
 	}
 
 	ret.setStyle(_data.style());

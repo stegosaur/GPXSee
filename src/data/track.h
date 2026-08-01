@@ -17,6 +17,10 @@ public:
 	Track(const TrackData &data);
 
 	Path path() const;
+	// Every recorded point, with no outlier elimination or stop-run
+	// compression -- unlike path(), which is meant for map rendering.
+	// Used by features that need to audit/list the raw recorded data.
+	Path allPoints() const;
 
 	GraphPair elevation(Map *map) const;
 	GraphPair speed() const;
@@ -63,6 +67,7 @@ private:
 		QDateTime start;
 		QVector<qreal> distance;
 		QVector<qreal> time;
+		QVector<qreal> movingTime;
 		QVector<qreal> speed;
 		QSet<int> outliers;
 		QSet<int> stop;

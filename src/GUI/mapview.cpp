@@ -14,6 +14,7 @@
 #include "trackitem.h"
 #include "routeitem.h"
 #include "waypointitem.h"
+#include "trackpointitem.h"
 #include "areaitem.h"
 #include "scaleitem.h"
 #include "coordinatesitem.h"
@@ -155,6 +156,11 @@ void MapView::centerOn(const QPointF &pos)
 	_cursorCoordinates->setCoordinates(Coordinates());
 }
 
+void MapView::centerOnCoordinates(const Coordinates &c)
+{
+	centerOn(_map->ll2xy(c));
+}
+
 void MapView::updateLegend()
 {
 	_legend->clear();
@@ -201,6 +207,21 @@ PathItem *MapView::addTrack(const Track &track)
 	if (_showTracks) {
 		addPOI(_poi->points(ti->path()));
 		_legend->addItem(ti);
+	}
+
+	Path allPoints(track.allPoints());
+	for (int i = 0; i < allPoints.size(); i++) {
+		const PathSegment &seg = allPoints.at(i);
+		for (int j = 0; j < seg.size(); j++) {
+			TrackPointItem *pi = new TrackPointItem(seg.at(j), track.date(),
+			  track.name(), track.file(), _map);
+			pi->setColor(ti->color());
+			pi->setSize(_waypointSize);
+			pi->setDigitalZoom(_digitalZoom);
+			pi->setVisible(_showWaypoints);
+			_scene->addItem(pi);
+			_trackPoints.append(pi);
+		}
 	}
 
 	return ti;
@@ -418,6 +439,8 @@ void MapView::rescale()
 		_areas.at(i)->setMap(_map);
 	for (int i = 0; i < _waypoints.size(); i++)
 		_waypoints.at(i)->setMap(_map);
+	for (int i = 0; i < _trackPoints.size(); i++)
+		_trackPoints.at(i)->setMap(_map);
 
 	for (POIHash::const_iterator it = _pois.constBegin();
 	  it != _pois.constEnd(); it++)
@@ -556,6 +579,7 @@ void MapView::setUnits(Units units)
 {
 	WaypointItem::setUnits(units);
 	PathItem::setUnits(units);
+	TrackPointItem::setUnits(units);
 
 	for (int i = 0; i < _tracks.count(); i++)
 		_tracks.at(i)->updateTicks();
@@ -586,6 +610,7 @@ void MapView::setTimeZone(const QTimeZone &zone)
 {
 	WaypointItem::setTimeZone(zone);
 	PathItem::setTimeZone(zone);
+	TrackPointItem::setTimeZone(zone);
 
 	for (int i = 0; i < _tracks.count(); i++)
 		_tracks.at(i)->updateMarkerInfo();
@@ -617,6 +642,8 @@ void MapView::digitalZoom(int zoom)
 		_areas.at(i)->setDigitalZoom(_digitalZoom);
 	for (int i = 0; i < _waypoints.size(); i++)
 		_waypoints.at(i)->setDigitalZoom(_digitalZoom);
+	for (int i = 0; i < _trackPoints.size(); i++)
+		_trackPoints.at(i)->setDigitalZoom(_digitalZoom);
 	for (POIHash::const_iterator it = _pois.constBegin();
 	  it != _pois.constEnd(); it++)
 		it.value()->setDigitalZoom(_digitalZoom);
@@ -846,6 +873,7 @@ void MapView::clear()
 	_routes.clear();
 	_areas.clear();
 	_waypoints.clear();
+	_trackPoints.clear();
 
 	_scene->removeItem(_mapScale);
 	_scene->removeItem(_cursorCoordinates);
@@ -903,6 +931,8 @@ void MapView::showWaypoints(bool show)
 
 	for (int i = 0; i < _waypoints.count(); i++)
 		_waypoints.at(i)->setVisible(show);
+	for (int i = 0; i < _trackPoints.count(); i++)
+		_trackPoints.at(i)->setVisible(show);
 
 	updatePOI();
 }

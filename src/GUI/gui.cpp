@@ -61,6 +61,7 @@
 #include "mapaction.h"
 #include "poiaction.h"
 #include "navigationwidget.h"
+#include "waypointaudit.h"
 #include "macos.h"
 #include "gui.h"
 
@@ -82,6 +83,7 @@ GUI::GUI(const QString &lang)
 
 	createMapView();
 	createGraphTabs();
+	createWaypointAudit();
 	createStatusBar();
 	createActions();
 	createMenus();
@@ -139,6 +141,20 @@ void GUI::createBrowser()
 	_browser->setFilter(Data::filter());
 	connect(_browser, &FileBrowser::listChanged, this,
 	  &GUI::updateNavigationActions);
+}
+
+void GUI::createWaypointAudit()
+{
+	_waypointAudit = new WaypointAudit(this);
+	_waypointAudit->hide();
+	addDockWidget(Qt::LeftDockWidgetArea, _waypointAudit);
+
+	connect(_waypointAudit, &WaypointAudit::pointActivated, this,
+	  &GUI::waypointActivated);
+	connect(_waypointAudit, &WaypointAudit::fileCloseRequested, this,
+	  &GUI::closeFile);
+	connect(_waypointAudit, &WaypointAudit::highlightChanged, this,
+	  &GUI::highlightFiles);
 }
 
 TreeNode<MapAction*> GUI::createMapActionsNode(const TreeNode<Map*> &node)
@@ -837,6 +853,10 @@ void GUI::createMenus()
 	dataMenu->addAction(_showRoutesAction);
 	dataMenu->addAction(_showAreasAction);
 	dataMenu->addAction(_showWaypointsAction);
+	dataMenu->addSeparator();
+	QAction *auditAction = _waypointAudit->toggleViewAction();
+	auditAction->setMenuRole(QAction::NoRole);
+	dataMenu->addAction(auditAction);
 
 #ifdef Q_OS_ANDROID
 	_poiMenu = _menu->addMenu(tr("&POI"));
@@ -1283,7 +1303,7 @@ bool GUI::loadFile(const QString &fileName, bool tryUnknown, int &showError)
 	Data data(fileName, tryUnknown);
 
 	if (data.isValid()) {
-		loadData(data);
+		loadData(data, fileName);
 		return true;
 	} else {
 		updateNavigationActions();
@@ -1316,10 +1336,27 @@ bool GUI::loadFile(const QString &fileName, bool tryUnknown, int &showError)
 	}
 }
 
-void GUI::loadData(const Data &data)
+void GUI::loadData(const Data &data, const QString &fileName)
 {
 	QList<QList<GraphItem*> > graphs;
 	QList<PathItem*> paths;
+
+	if (!data.tracks().isEmpty()) {
+		QString rawFile(data.tracks().first().file());
+		QString canonical(QFileInfo(rawFile).canonicalFilePath());
+		_waypointAudit->addFile(canonical.isEmpty() ? rawFile : canonical,
+		  data.tracks());
+	}
+
+	/* With an active highlight, files outside the highlighted set stay
+	   open (browsable in the audit sidebar above) but contribute nothing
+	   to the map, graphs or statistics. */
+	if (!_highlightedFiles.isEmpty() && !fileName.isEmpty()) {
+		QString canonical(QFileInfo(fileName).canonicalFilePath());
+		if (!_highlightedFiles.contains(canonical.isEmpty() ? fileName
+		  : canonical))
+			return;
+	}
 
 	for (int i = 0; i < data.tracks().count(); i++) {
 		const Track &track = data.tracks().at(i);
@@ -1764,7 +1801,7 @@ void GUI::reloadFiles()
 	_mapView->showExtendedInfo(_files.size() > 1);
 }
 
-void GUI::closeFiles()
+void GUI::closeFiles(bool keepAudit)
 {
 	_trackCount = 0;
 	_routeCount = 0;
@@ -1783,8 +1820,30 @@ void GUI::closeFiles()
 
 	_mapView->clear();
 	_mapView->showExtendedInfo(false);
+	if (!keepAudit) {
+		_waypointAudit->clear();
+		_highlightedFiles.clear();
+	}
 
 	_files.clear();
+}
+
+/* Rebuild the displayed scene (map/graphs/stats) from the given file
+   list by reloading it through the normal load path, keeping the audit
+   sidebar (entries and highlight checkmarks) intact. */
+void GUI::reloadDisplay(const QStringList &files)
+{
+	closeFiles(true);
+
+	_fileActionGroup->setEnabled(false);
+	updateStatusBarInfo();
+	updateWindowTitle();
+	updateGraphTabs();
+	updateDataDEMDownloadAction();
+
+	int showError = (files.size() > 1) ? 2 : 1;
+	for (int i = 0; i < files.count(); i++)
+		openFile(files.at(i), true, showError);
 }
 
 void GUI::closeAll()
@@ -1800,6 +1859,30 @@ void GUI::closeAll()
 #ifdef Q_OS_ANDROID
 	_browser->setCurrentDir(QString());
 #endif // Q_OS_ANDROID
+}
+
+void GUI::closeFile(const QString &fileName)
+{
+	/* GPXSee has no per-file removal from the loaded scene/graphs/
+	   aggregate stats, so closing just one file is done by closing
+	   everything and reloading the files that weren't the target --
+	   reusing the normal (already correct) load path rather than trying
+	   to surgically undo one file's contribution to shared state. */
+	QStringList remaining;
+	for (int i = 0; i < _files.count(); i++)
+		if (_files.at(i) != fileName)
+			remaining.append(_files.at(i));
+
+	_highlightedFiles.remove(fileName);
+	_waypointAudit->removeFile(fileName);
+
+	reloadDisplay(remaining);
+}
+
+void GUI::highlightFiles(const QSet<QString> &files)
+{
+	_highlightedFiles = files;
+	reloadDisplay(QStringList(_files));
 }
 
 void GUI::showGraphs(bool show)
@@ -1883,6 +1966,16 @@ void GUI::showWaypoints(bool show)
 {
 	_mapView->showWaypoints(show);
 	updateDataDEMDownloadAction();
+}
+
+void GUI::waypointActivated(const Coordinates &coordinates, qreal distance)
+{
+	_mapView->centerOnCoordinates(coordinates);
+	_mapView->setMarkerPosition(distance);
+
+	GraphTab *gt = static_cast<GraphTab*>(_graphTabWidget->currentWidget());
+	if (gt)
+		gt->setSliderPosition(distance);
 }
 
 void GUI::showAreas(bool show)
