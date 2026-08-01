@@ -27,16 +27,48 @@ WaypointAudit::WaypointAudit(QWidget *parent)
 
 	QHBoxLayout *tzLayout = new QHBoxLayout();
 	_timeZoneCombo = new QComboBox(container);
-	QList<QByteArray> ids(QTimeZone::availableTimeZoneIds());
-	std::sort(ids.begin(), ids.end());
-	int current = 0;
-	for (int i = 0; i < ids.size(); i++) {
-		QString id(QString::fromLatin1(ids.at(i)));
-		_timeZoneCombo->addItem(id);
-		if (ids.at(i) == _timeZone.id())
-			current = i;
+	/* Plain UTC offsets instead of the (huge) IANA zone list, each with
+	   a representative major city. Fixed offsets -- no DST. The item's
+	   user data is the offset from UTC in seconds. */
+	static const struct {
+		int hours;
+		int minutes;
+		const char *city;
+	} zones[] = {
+		{-12, 0, 0}, {-11, 0, "Pago Pago"}, {-10, 0, "Honolulu"},
+		{-9, 0, "Anchorage"}, {-8, 0, "Los Angeles"}, {-7, 0, "Denver"},
+		{-6, 0, "Chicago"}, {-5, 0, "New York"}, {-4, 0, "Caracas"},
+		{-3, 0, "Buenos Aires"}, {-2, 0, 0}, {-1, 0, "Azores"},
+		{0, 0, "London"}, {1, 0, "Paris"}, {2, 0, "Cairo"},
+		{3, 0, "Moscow"}, {4, 0, "Dubai"}, {5, 0, "Karachi"},
+		{5, 30, "Mumbai"}, {6, 0, "Dhaka"}, {7, 0, "Bangkok"},
+		{8, 0, "Beijing"}, {9, 0, "Tokyo"}, {9, 30, "Adelaide"},
+		{10, 0, "Sydney"}, {11, 0, "Noumea"}, {12, 0, "Auckland"},
+		{13, 0, "Apia"}, {14, 0, "Kiritimati"}
+	};
+	for (size_t i = 0; i < sizeof(zones) / sizeof(zones[0]); i++) {
+		int offset = zones[i].hours * 3600
+		  + ((zones[i].hours < 0) ? -1 : 1) * zones[i].minutes * 60;
+
+		QString label(QLatin1String("UTC"));
+		if (offset) {
+			label += (offset > 0) ? "+" : "-";
+			label += QString::number(qAbs(zones[i].hours));
+			if (zones[i].minutes)
+				label += QString(":%1").arg(zones[i].minutes, 2, 10,
+				  QChar('0'));
+		}
+		if (zones[i].city)
+			label += QString(" (%1)").arg(zones[i].city);
+
+		_timeZoneCombo->addItem(label, offset);
 	}
-	_timeZoneCombo->setCurrentIndex(current);
+	int current = _timeZoneCombo->findData(
+	  _timeZone.offsetFromUtc(QDateTime::currentDateTimeUtc()));
+	if (current >= 0) {
+		_timeZoneCombo->setCurrentIndex(current);
+		_timeZone = QTimeZone(_timeZoneCombo->itemData(current).toInt());
+	}
 	QPushButton *systemTzButton = new QPushButton(tr("Use system timezone"),
 	  container);
 	tzLayout->addWidget(_timeZoneCombo, 1);
@@ -227,14 +259,17 @@ void WaypointAudit::timeZoneSelected(int index)
 	if (index < 0)
 		return;
 
-	_timeZone = QTimeZone(_timeZoneCombo->itemText(index).toLatin1());
+	_timeZone = QTimeZone(_timeZoneCombo->itemData(index).toInt());
 	rebuild();
 }
 
 void WaypointAudit::useSystemTimeZone()
 {
-	QTimeZone system(QTimeZone::systemTimeZone());
-	int idx = _timeZoneCombo->findText(QString::fromLatin1(system.id()));
+	/* Map the system zone to its current UTC offset (the offset list has
+	   no DST, so this picks the offset valid right now). */
+	int offset = QTimeZone::systemTimeZone().offsetFromUtc(
+	  QDateTime::currentDateTimeUtc());
+	int idx = _timeZoneCombo->findData(offset);
 	if (idx >= 0)
 		_timeZoneCombo->setCurrentIndex(idx);
 }
@@ -242,23 +277,32 @@ void WaypointAudit::useSystemTimeZone()
 void WaypointAudit::showContextMenu(const QPoint &pos)
 {
 	QTreeWidgetItem *item = _tree->itemAt(pos);
-	if (!item)
-		return;
-
-	QVariant fv(item->data(0, FILE_ROLE));
-	if (!fv.isValid())
-		return;
-	QString file(fv.toString());
+	QString file;
+	if (item) {
+		QVariant fv(item->data(0, FILE_ROLE));
+		if (fv.isValid())
+			file = fv.toString();
+	}
 
 	QMenu menu(_tree);
-	QAction *highlightAction = menu.addAction(
-	  tr("Highlight %1").arg(QFileInfo(file).fileName()));
-	highlightAction->setCheckable(true);
-	highlightAction->setChecked(_highlighted.contains(file));
-	QAction *closeAction = menu.addAction(
-	  tr("Close %1").arg(QFileInfo(file).fileName()));
+	QAction *highlightAction = 0, *closeAction = 0;
+	if (!file.isEmpty()) {
+		highlightAction = menu.addAction(
+		  tr("Highlight %1").arg(QFileInfo(file).fileName()));
+		highlightAction->setCheckable(true);
+		highlightAction->setChecked(_highlighted.contains(file));
+		closeAction = menu.addAction(
+		  tr("Close %1").arg(QFileInfo(file).fileName()));
+		menu.addSeparator();
+	}
+	QAction *clearHighlightsAction = menu.addAction(
+	  tr("Remove all highlights"));
+	clearHighlightsAction->setEnabled(!_highlighted.isEmpty());
 
 	QAction *chosen = menu.exec(_tree->viewport()->mapToGlobal(pos));
+	if (!chosen)
+		return;
+
 	if (chosen == closeAction)
 		emit fileCloseRequested(file);
 	else if (chosen == highlightAction) {
@@ -266,6 +310,11 @@ void WaypointAudit::showContextMenu(const QPoint &pos)
 			_highlighted.insert(file);
 		else
 			_highlighted.remove(file);
+
+		rebuild();
+		emit highlightChanged(_highlighted);
+	} else if (chosen == clearHighlightsAction) {
+		_highlighted.clear();
 
 		rebuild();
 		emit highlightChanged(_highlighted);
